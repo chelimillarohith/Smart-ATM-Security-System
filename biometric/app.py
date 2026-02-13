@@ -1,19 +1,42 @@
 import streamlit as st
 import sqlite3
 import time
-from fingerprint_recog import verify_fingerprint
-from face_recog import verify_face, register_face, liveness_detection
+import os
+
+# =====================================================
+# ⭐ SAFE IMPORTS (Cloud Compatible)
+# =====================================================
+
+# Face Recognition (Cloud cannot install dlib)
+try:
+    from face_recog import verify_face, register_face, liveness_detection
+    FACE_AVAILABLE = True
+except:
+    FACE_AVAILABLE = False
+
+# Fingerprint Recognition
+try:
+    from fingerprint_recog import verify_fingerprint
+    FP_AVAILABLE = True
+except:
+    FP_AVAILABLE = False
+
+# DB + Security (always available)
 from db import (
     create_tables, add_user, get_user, get_all_users,
     log_intrusion, get_pin,
     create_proxy_approval_table,
     save_proxy_decision,
-    get_latest_proxy_decision
+    get_latest_proxy_decision,
+    clear_proxy_decisions
 )
-from security_utils import send_intrusion_alert, send_remote_auth_email
-import cv2
-import os
 
+from security_utils import send_intrusion_alert, send_remote_auth_email
+from streamlit_autorefresh import st_autorefresh
+
+# =====================================================
+# INITIAL SETUP
+# =====================================================
 
 DB = "biometrics.db"
 create_tables()
@@ -21,126 +44,48 @@ create_proxy_approval_table()
 
 st.set_page_config(page_title="AI ATM Security System", layout="wide", page_icon="💳")
 
-query_params = st.experimental_get_query_params()
+# =====================================================
+# INFO BANNER (Cloud Demo Notice)
+# =====================================================
 
+if not FACE_AVAILABLE or not FP_AVAILABLE:
+    st.warning("⚠️ Running in Cloud Demo Mode — Biometric AI modules are disabled.")
 
-# =========================================================
-# ✅ HANDLE ALLOW / DENY FROM EMAIL
-# =========================================================
-if "proxy" in query_params and "user" in query_params:
+# =====================================================
+# SIDEBAR MENU
+# =====================================================
 
-    decision = query_params["proxy"][0].upper()
-    user = query_params["user"][0]
-
-    if decision in ["ALLOW", "DENY"]:
-        save_proxy_decision(user, decision)
-
-        if decision == "ALLOW":
-            st.success("✅ Remote Access Approved.")
-        else:
-            st.error("❌ Remote Access Denied.")
-
-        st.stop()
-
-
-# =========================================================
-# ✅ HANDLE CAMERA VERIFY LINK
-# =========================================================
-if "verify_proxy" in query_params and "user" in query_params:
-
-    verify_user = query_params["user"][0]
-
-    st.title("📷 Remote Face Verification")
-
-    face_capture = st.camera_input("Show your face")
-
-    if face_capture:
-
-        live_face = face_capture.getvalue()
-        user_data = get_user(verify_user)
-
-        if user_data:
-            stored_fp, stored_face = user_data
-
-            if verify_face(stored_face, live_face) and liveness_detection(live_face):
-                save_proxy_decision(verify_user, "ALLOW")
-                st.success("✅ Identity Verified. Access Approved.")
-            else:
-                save_proxy_decision(verify_user, "DENY")
-                st.error("❌ Face verification failed.")
-
-        st.stop()
-
-
-# =========================================================
-# SIDEBAR
-# =========================================================
 menu = st.sidebar.radio(
     "Select Role",
     ["Register User", "User Login", "Remote Authentication", "Admin Panel"]
 )
 
-
-# =========================================================
-# CAMERA FUNCTION (STABLE)
-# =========================================================
-def try_auto_capture_one_frame():
-
-    try:
-        if os.name == "nt":
-            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-        else:
-            cap = cv2.VideoCapture(0)
-
-        if not cap.isOpened():
-            return None
-
-        time.sleep(1)
-
-        ret, frame = cap.read()
-        cap.release()
-
-        if not ret:
-            return None
-
-        ret2, encimg = cv2.imencode('.jpg', frame)
-        return encimg.tobytes() if ret2 else None
-
-    except:
-        return None
-
-
-# =========================================================
+# =====================================================
 # REGISTER USER
-# =========================================================
+# =====================================================
+
 if menu == "Register User":
 
-    st.title("📝 Register New User")
+    st.title("📝 Register User")
 
     username = st.text_input("Username")
     email = st.text_input("Email")
-    fingerprint = st.file_uploader("Upload Fingerprint")
-    face = st.camera_input("Capture Face")
     pin = st.text_input("4-digit PIN", type="password")
 
     if st.button("Register"):
 
-        if not all([username, email, fingerprint, face, pin]):
+        if not username or not email or not pin:
             st.warning("Fill all fields.")
-
-        elif len(pin) != 4 or not pin.isdigit():
-            st.error("PIN must be exactly 4 digits.")
-
         else:
-            face_enc = register_face(face.getvalue())
-            add_user(username, fingerprint.read(), face_enc, pin)
+            # Demo Mode Safe Registration
+            add_user(username, b"demo_fp", b"demo_face", pin)
+            st.success("User Registered (Demo Mode)")
 
-            st.success("✅ User Registered Successfully!")
 
-
-# =========================================================
+# =====================================================
 # USER LOGIN
-# =========================================================
+# =====================================================
+
 elif menu == "User Login":
 
     st.title("💳 Secure ATM Login")
@@ -159,11 +104,6 @@ elif menu == "User Login":
 
         if stored_pin != pin:
             st.error("Invalid credentials")
-
-            img = try_auto_capture_one_frame()
-            if img:
-                send_intrusion_alert(img, username, email, "Invalid PIN")
-
             st.stop()
 
         user = get_user(username)
@@ -171,39 +111,42 @@ elif menu == "User Login":
         if user:
             stored_fp, stored_face = user
 
-            fp_file = st.file_uploader("Upload Fingerprint")
+            # ===============================
+            # Fingerprint Verification
+            # ===============================
+            if FP_AVAILABLE:
+                fp_file = st.file_uploader("Upload Fingerprint")
 
-            if fp_file and verify_fingerprint(stored_fp, fp_file.read()):
+                if fp_file and verify_fingerprint(stored_fp, fp_file.read()):
+                    st.success("Fingerprint Verified")
+                elif fp_file:
+                    st.error("Fingerprint Failed")
+            else:
+                st.info("Fingerprint Disabled (Cloud Demo)")
 
+            # ===============================
+            # Face Verification
+            # ===============================
+            if FACE_AVAILABLE:
                 face_capture = st.camera_input("Capture Face")
 
                 if face_capture:
-
                     live_face = face_capture.getvalue()
 
                     if verify_face(stored_face, live_face) and liveness_detection(live_face):
-
                         st.success("✅ ACCESS GRANTED")
                         st.radio("Transaction", ["Withdraw", "Deposit", "Balance"])
-
                     else:
                         st.error("Face verification failed")
-
-                        img = try_auto_capture_one_frame()
-                        if img:
-                            send_intrusion_alert(img, username, email, "Face Failure")
-
-            elif fp_file:
-                st.error("Fingerprint mismatch")
-
-                img = try_auto_capture_one_frame()
-                if img:
-                    send_intrusion_alert(img, username, email, "Fingerprint Failure")
+            else:
+                st.success("✅ ACCESS GRANTED (Demo Mode)")
+                st.radio("Transaction", ["Withdraw", "Deposit", "Balance"])
 
 
-# =========================================================
-# ⭐ REMOTE AUTHENTICATION WITH LIVE STATUS
-# =========================================================
+# =====================================================
+# REMOTE AUTHENTICATION
+# =====================================================
+
 elif menu == "Remote Authentication":
 
     st.title("🌐 Remote Transaction Authorization")
@@ -225,40 +168,33 @@ elif menu == "Remote Authentication":
             log_intrusion(username, "remote_invalid_pin")
             st.stop()
 
-        img = try_auto_capture_one_frame()
+        clear_proxy_decisions(username)
 
-        if img:
-            send_remote_auth_email(img, username, email)
+        # Demo image instead of camera
+        send_remote_auth_email(b"demo_image", username, email)
 
-            st.success("✅ Authorization email sent!")
-            status_box = st.empty()
+        st.success("Authorization email sent!")
+        st.info("Waiting for account holder approval...")
 
-            # ⭐ LIVE POLLING
-            while True:
+        st_autorefresh(interval=2000, key="approval_refresh")
 
-                decision = get_latest_proxy_decision(username)
+        decision = get_latest_proxy_decision(username)
 
-                if decision == "ALLOW":
-                    status_box.success("✅ REMOTE AUTHORIZATION SUCCESSFUL!")
-                    st.balloons()
-                    break
+        if decision == "ALLOW":
+            st.success("✅ REMOTE AUTHORIZATION SUCCESSFUL!")
+            st.balloons()
 
-                elif decision == "DENY":
-                    status_box.error("❌ REMOTE AUTHORIZATION DENIED!")
-                    break
-
-                else:
-                    status_box.warning("⏳ Waiting for approval...")
-                    time.sleep(3)
-                    st.experimental_rerun()
+        elif decision == "DENY":
+            st.error("❌ REMOTE AUTHORIZATION DENIED!")
 
         else:
-            st.error("Camera not available.")
+            st.warning("⏳ Awaiting approval...")
 
 
-# =========================================================
+# =====================================================
 # ADMIN PANEL
-# =========================================================
+# =====================================================
+
 elif menu == "Admin Panel":
 
     st.title("👩‍💼 Admin Dashboard")
