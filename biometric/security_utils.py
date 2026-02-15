@@ -15,7 +15,7 @@ from email.mime.text import MIMEText
 # =====================================================
 # 🔥 IMPORTANT — PUT YOUR NGROK URL HERE
 # =====================================================
-BASE_URL = "https://nonextenuating-nonosmotically-nieves.ngrok-free.dev"
+BASE_URL = "https://smart-atm-security-system.onrender.com"
 # Example:
 # BASE_URL = "https://abcd-1234.ngrok-free.app"
 
@@ -200,3 +200,4 @@ def send_remote_auth_email(image_bytes, username, to_email):
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(sender, password)
         server.send_message(msg)
+
